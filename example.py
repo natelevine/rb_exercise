@@ -1,3 +1,6 @@
+"""
+This is just scratch / me playing around with the example code. Not part of the actual exercise.
+"""
 from web3 import Web3
 from abis import QUICKSWAP_PAIR
 

@@ -1,15 +1,12 @@
 import asyncio
 from time import time_ns
-from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 from web3 import Web3
 from web3.middleware import geth_poa_middleware
-from abis import QUICKSWAP_PAIR
-from clients.contract.quick_swap import QuickSwapPairClient
-from constants import Pair
-
-# external node provider for this exercise
-MATIC_WSS = 'wss://ws-matic-mainnet.chainstacklabs.com'
+from protocol.quickswap.contract.abis import QUICKSWAP_PAIR
+from protocol.quickswap.config import MATIC_WSS, MONITORED_PAIRS
+from protocol.quickswap.contract.clients import QuickSwapPairClient
+from protocol.quickswap.events.liquidity_pool import PairStatusEvent, SwapEvent, SwapEvents
 
 # Connect to the remote node.
 web3_websocket_conn = Web3(Web3.WebsocketProvider(MATIC_WSS))
@@ -17,108 +14,97 @@ web3_websocket_conn = Web3(Web3.WebsocketProvider(MATIC_WSS))
 # Fixes a fieldLength error calling getBlock since we're using a POA chain
 web3_websocket_conn.middleware_onion.inject(geth_poa_middleware, layer=0)
 
-# Do these ever change? Maybe should be dynamic config? Reliability vs. flexibility trade-off
-WMATIC_USDC_ADDRESS = '0x6e7a5fafcec6bb1e78bae2a1f0b612012bf14827'
-USDC_WETH_ADDRESS = '0x853ee4b2a13f8a742d64c8f088be7ba2131f670d'
-WMATIC_WETH_ADDRESS = '0xadbf1854e5883eb8aa7baf50705338739e558e5b'
+clients = [QuickSwapPairClient(MATIC_WSS, QUICKSWAP_PAIR['abi'], mp[0], mp[1]) for mp in MONITORED_PAIRS]
 
-MONITORED_PAIRS = {
-    (Pair.WMATIC_USDC, WMATIC_USDC_ADDRESS),
-    (Pair.USDC_WETH, USDC_WETH_ADDRESS),
-    (Pair.WMATIC_WETH, WMATIC_WETH_ADDRESS),
+STATS = {
+    'BLOCK_PROCESS': {
+        'min_process_time_ms': float('inf'),
+        'max_process_time_ms': float('-inf'),
+    },
+    'SWAP_PROCESS': {
+        'min_process_time_ms': float('inf'),
+        'max_process_time_ms': float('-inf'),
+    }
 }
-
-QUICKSWAP_PAIR_ABI = QUICKSWAP_PAIR['abi']
-
-clients = [QuickSwapPairClient(MATIC_WSS, QUICKSWAP_PAIR_ABI, mp[0], mp[1]) for mp in MONITORED_PAIRS]
-
-@dataclass(frozen=True)
-class PairStatusEvent:
-    """
-    Describes point-in-time state of a liquidity pool in the QuickSwap DEX
-    pair      - QuickSwap pair that this status represents
-    pair_id	  - Contract address of the pool's pair
-    reserve_0 - The amount of Token0 in reserve in the pool
-    reserve_1 - The amount of Token1 in reserve in the pool
-    lp_shares - The amount of LP tokens outstanding for the pool
-    block	  - The block number as of which this position was calculated
-    timestamp - Unix time (in milliseconds) when this event was created
-    """
-
-    pair: Pair
-    pair_id: str
-    reserve_0: int
-    reserve_1: int
-    lp_shares: int
-    block: int
-    timestamp: int
-
-@dataclass(frozen=True)
-class SwapEvent:
-    """
-    Describes per-block swaps for a given liquidity pool in the QuickSwap DEX
-
-    pair         - QuickSwap pair that this swap event represents
-    pair_id	     - Contract address of the pool's pair
-    amount_0_in  - Amount of token0 swapped in
-    amount_1_in  - Amount of token1 swapped in
-    amount_0_out - Amount of token0 swapped out
-    amount_1_out - Amount of token1 swapped out
-    tx           - Transaction hash of the swap
-    block	     - The block number containing this swap
-    timestamp    - Unix time (in milliseconds) when this event was created
-    """
-
-    pair: Pair
-    pair_id: str
-    amount_0_in: int
-    amount_1_in: int
-    amount_0_out: int
-    amount_1_out: int
-    tx: str
-    block: int
-    timestamp: int
-
-@dataclass(frozen=True)
-class SwapEvents:
-    swaps: list[SwapEvent]
 
 async def main(executor: ThreadPoolExecutor) -> None:
     print("***** Started main function *****")
     latest_block_filter = web3_websocket_conn.eth.filter('latest')
     await asyncio.gather(
         poll_for_blocks(latest_block_filter, executor, 0.3),
-        poll_for_swaps(0.3))
+        poll_for_swaps(0.3),
+        report_process_stats(10))
+
+def update_process_stats(start_ns: int, end_ns: int, process_key: str) -> None:
+    process_time_ms = (end_ns - start_ns) / 1000000
+    process_stats = STATS[process_key]
+
+    if process_time_ms < process_stats['min_process_time_ms']:
+        process_stats['min_process_time_ms'] = process_time_ms
+
+    if process_time_ms > process_stats['max_process_time_ms']:
+        process_stats['max_process_time_ms'] = process_time_ms
+
+async def report_process_stats(report_interval: int) -> None:
+    while(True):
+        await asyncio.sleep(report_interval)
+        print(f"BLOCK_PROCESS: min_time_ms: {STATS['BLOCK_PROCESS']['min_process_time_ms']}, max_time_ms: {STATS['BLOCK_PROCESS']['max_process_time_ms']}")
+        print(f"SWAP_PROCESS: min_time_ms: {STATS['SWAP_PROCESS']['min_process_time_ms']}, max_time_ms: {STATS['SWAP_PROCESS']['max_process_time_ms']}")
 
 class BlockTracker:
+    """
+    Provides basic block "lineage" monitoring, i.e. that we don't
+    skip over any blocks in producing our data stream.
+
+    In a production app, I imagine this would become more robust,
+    driving alerting and/or automated recovery.
+    """
+
     def __init__(self) -> None:
         self.prev_block = None
     
-    def check_continuous_block_lineage(self, curr_block: asyncio.Future) -> bool:
+    def assert_continuous_block_lineage(self, curr_block: asyncio.Future) -> bool:
         # In case this is the first block we've seen, initialize our tracker so we can pass this check
         curr_block_parent = curr_block.result().parentHash.hex()
         self.prev_block = self.prev_block or curr_block_parent
         is_direct_link = curr_block_parent == self.prev_block
 
         if not is_direct_link:
-            print(f"!!!!!!!!!!! **************** Missing at least one block: {curr_block_parent} ***************** !!!!!!!!!!!!!!!!")
+            # lol
+            print(f"!!!!!!!!!!! ************** Missing at least one block: {curr_block_parent} *************** !!!!!!!!!!!!")
 
-        # update our status regardless of whether we passed or not
+        # update block status regardless of whether we passed or not
         self.prev_block = curr_block.result().hash.hex()
 
 
 async def poll_for_blocks(latest_block_filter, executor: ThreadPoolExecutor, poll_interval: int) -> None:
-    print("***** Beginning poll for new blocks *****")
+    """
+    Must be called from an asyncio event loop. This kicks off a poll / async sleep routine looking for
+    new blocks generated from the `latest_block_filter` provided.
+
+    If a new block is found, it kicks off a number of concurrent requests to the current node
+    to ultimately build a status event describing the liquidity pool as of the new node.
+
+    These requests are run in separate threads because the way Web3 provides these APIs
+    (at least with a Websocket connection) is not asyncio friendly. 
+    
+    Rather than block on synchronous calls, we kick them off at the same time using a ThreadPoolExecutor,
+    and release the event loop (`asyncio.gather`) until they all complete.
+    """
+
+    print(f"***** Beginning poll loop for new blocks. Poll interval set to: {poll_interval}s *****")
     block_tracker = BlockTracker()
 
     while True:
         for block in latest_block_filter.get_new_entries():
+            start_ns = time_ns()
+
             block_addr = block.hex()
             print("New block!!! - ", block_addr)
 
             event_loop = asyncio.get_running_loop()
             block_data = event_loop.run_in_executor(executor, web3_websocket_conn.eth.getBlock, block_addr)
-            block_data.add_done_callback(block_tracker.check_continuous_block_lineage)
+            block_data.add_done_callback(block_tracker.assert_continuous_block_lineage)
 
             for client in clients:
                 lp_shares = event_loop.run_in_executor(executor, client.fetch_lp_token_supply)
@@ -131,18 +117,27 @@ async def poll_for_blocks(latest_block_filter, executor: ThreadPoolExecutor, pol
 
                 print(pair_status_event.__dict__)
 
+                end_ns = time_ns()
+                update_process_stats(start_ns, end_ns, 'BLOCK_PROCESS')
+
         await asyncio.sleep(poll_interval)
 
-
 async def poll_for_swaps(poll_interval: int) -> None:
-    print("***** Beginning poll for swaps *****")
+    print(f"***** Beginning poll for swaps. Poll interval set to: {poll_interval}s *****")
+
     for client in clients:
         swap_filter = client.get_latest_swap_filter()
 
         while True:
             if (new_swaps := swap_filter.get_new_entries()):
+                start_ns = time_ns()
+
                 # TODO collate swaps from the same block together
                 print(build_latest_pair_swaps_event(client, new_swaps).__dict__)
+
+                end_ns = time_ns()
+                update_process_stats(start_ns, end_ns, 'SWAP_PROCESS')
+
             await asyncio.sleep(poll_interval)
 
 def build_latest_pair_status_event(block: int, client: QuickSwapPairClient, lp_shares: int, position: list[int]) -> PairStatusEvent:
@@ -153,7 +148,7 @@ def build_latest_pair_status_event(block: int, client: QuickSwapPairClient, lp_s
         reserve_1=position[1],
         lp_shares=lp_shares,
         block=block,
-        timestamp=int(time_ns() / 1000))
+        timestamp=int(time_ns() / 1000000))
 
 def build_latest_pair_swaps_event(client: QuickSwapPairClient, swaps: list) -> SwapEvents:
     if len(swaps) > 1:
@@ -161,8 +156,9 @@ def build_latest_pair_swaps_event(client: QuickSwapPairClient, swaps: list) -> S
         curr_block = swaps[0].blockNumber
         for swap in swaps:
             if curr_block != swap.blockNumber:
-                # This would probably be an alert
-                print("********** !!!!!!!!!!!!!!!!! Multiple swaps in one batch, with mismatched blocks ************** !!!!!!!!!!!!!!!!")
+                # Another sanity check, that our event blob only contains swap txns from the same block
+                # This would likely also be an alert
+                print("*********** !!!!!!!!!!!!! Multiple swaps in one batch, with mismatched blocks *********** !!!!!!!!!!!!!")
     
     swap_events = []
     for swap in swaps:
@@ -178,7 +174,7 @@ def build_latest_pair_swaps_event(client: QuickSwapPairClient, swaps: list) -> S
                 amount_1_out=args.amount1Out,
                 tx=swap.transactionHash,
                 block=swap.blockNumber,
-                timestamp=int(time_ns() / 1000)))
+                timestamp=int(time_ns() / 1000000)))
 
     return SwapEvents(swap_events)
 
