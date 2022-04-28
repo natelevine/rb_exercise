@@ -98,8 +98,8 @@ class BlockTracker:
     def __init__(self) -> None:
         self.prev_block = None
     
-    def assert_continuous_block_lineage(self, curr_block: asyncio.Future) -> bool:
-        curr_block_parent = curr_block.result().parentHash.hex()
+    def assert_continuous_block_lineage(self, curr_block) -> bool:
+        curr_block_parent = curr_block.parentHash.hex()
         # In case this is the first block we've seen, initialize our tracker so we can pass this check
         self.prev_block = self.prev_block or curr_block_parent
         is_direct_link = curr_block_parent == self.prev_block
@@ -109,7 +109,7 @@ class BlockTracker:
             print(f"!!!!!!!!!!! ************** Missing at least one block: {curr_block_parent} *************** !!!!!!!!!!!!")
 
         # update block status regardless of whether we passed or not
-        self.prev_block = curr_block.result().hash.hex()
+        self.prev_block = curr_block.hash.hex()
 
 
 async def poll_for_blocks(latest_block_filter, executor: ThreadPoolExecutor, clients: list[QuickSwapPairClient], conn: Web3, stats: ProcessStats, poll_interval: int) -> None:
@@ -138,23 +138,22 @@ async def poll_for_blocks(latest_block_filter, executor: ThreadPoolExecutor, cli
             print("New block!!! - ", block_addr)
 
             event_loop = asyncio.get_running_loop()
-            block_data = event_loop.run_in_executor(executor, conn.eth.getBlock, block_addr)
-            # register a callback to check block linkage as soon as the future resolves
-            block_data.add_done_callback(block_tracker.assert_continuous_block_lineage)
+            block_data = conn.eth.getBlock(block_addr)
+            block_tracker.assert_continuous_block_lineage(block_data)
 
             # No need to await here, so let the block polling loop continue
             asyncio.gather(*[collect_pool_status(client, event_loop, block_data, stats, start_ns) for client in clients])
 
         await asyncio.sleep(poll_interval)
 
-async def collect_pool_status(client: QuickSwapPairClient, event_loop: asyncio.AbstractEventLoop, block_data: asyncio.Future, stats: ProcessStats, start_ns: int):
+async def collect_pool_status(client: QuickSwapPairClient, event_loop: asyncio.AbstractEventLoop, block_data, stats: ProcessStats, start_ns: int):
     lp_shares = event_loop.run_in_executor(executor, client.fetch_lp_token_supply)
     position = event_loop.run_in_executor(executor, client.fetch_current_pool_reserves)
 
     # We have to await here since we need the results to build the status event
-    await asyncio.gather(block_data, lp_shares, position)
+    await asyncio.gather(lp_shares, position)
 
-    block_number = block_data.result().number
+    block_number = block_data.number
     pair_status_event = build_latest_pair_status_event(block_number, client, lp_shares.result(), position.result())
     # TODO - extract this to a formal publish method
     print(json.dumps(pair_status_event.__dict__, indent=2))
@@ -174,8 +173,8 @@ async def swap_loop(client: QuickSwapPairClient, stats: ProcessStats, poll_inter
 
             # TODO - extract this to a formal publish method
             swap_events = build_latest_pair_swaps_event(client, new_swaps).__dict__
-            swaps_json_friendly = [swap.__dict__ for swap in swap_events['swaps']]
-            print(json.dumps(swaps_json_friendly, indent=2))
+            json_friendly_swaps = [swap.__dict__ for swap in swap_events['swaps']]
+            print(json.dumps(json_friendly_swaps, indent=2))
 
             end_ns = time_ns()
             stats.report_swap_process(start_ns, end_ns)
