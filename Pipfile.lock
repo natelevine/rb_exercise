@@ -123,7 +123,7 @@
                 "sha256:11a36f4d3ce51dfc1043f3218591ac4eb1ceb172919cebe05b52a5bcc8d245c2",
                 "sha256:c5d0cb3f5b6e81e8e35da5754388ddcc6d0d14b6c6a132cb93d69ed580a7278c"
             ],
-            "markers": "python_full_version >= '3.5.0'",
+            "markers": "python_version >= '3.5'",
             "version": "==2.1.1"
         },
         "bitarray": {
@@ -144,7 +144,7 @@
                 "sha256:2857e29ff0d34db842cd7ca3230549d1a697f96ee6d3fb071cfa6c7393832597",
                 "sha256:6881edbebdb17b39b4eaaa821b438bf6eddffb4468cf344f09f89def34a8b1df"
             ],
-            "markers": "python_full_version >= '3.5.0'",
+            "markers": "python_version >= '3.5'",
             "version": "==2.0.12"
         },
         "cytoolz": {
@@ -178,7 +178,7 @@
                 "sha256:3f40cecd5ead88184aa9550afc19d057f103728108c5102f592f8415949b5a76",
                 "sha256:de7385148a8e0237ba1240cddbc06d53f56731140f8593bdb8429306f6b42271"
             ],
-            "markers": "python_version < '4' and python_full_version >= '3.5.0'",
+            "markers": "python_version >= '3.5' and python_version < '4'",
             "version": "==0.3.2"
         },
         "eth-keyfile": {
@@ -208,7 +208,7 @@
                 "sha256:39cce97f401f082739b19258dfa3355101c64390914c73fe2b90012f443e0dc7",
                 "sha256:b7fa58635c1cb0cbf538b2f5f1e66139575ea4853eac1d6000f0961a4b277422"
             ],
-            "markers": "python_version < '4' and python_full_version >= '3.5.0'",
+            "markers": "python_version >= '3.5' and python_version < '4'",
             "version": "==2.3.0"
         },
         "eth-utils": {
@@ -216,7 +216,7 @@
                 "sha256:74240a8c6f652d085ed3c85f5f1654203d2f10ff9062f83b3bad0a12ff321c7a",
                 "sha256:bf82762a46978714190b0370265a7148c954d3f0adaa31c6f085ea375e4c61af"
             ],
-            "markers": "python_version < '4' and python_full_version >= '3.5.0' and python_full_version != '3.5.2'",
+            "markers": "python_version >= '3.5' and python_version < '4' and python_full_version != '3.5.2'",
             "version": "==1.10.0"
         },
         "frozenlist": {
@@ -554,7 +554,7 @@
                 "sha256:6b312d5e15138552f1bda8a4e66c30e236c831b612b2bf0005f8a1df10a4bc33",
                 "sha256:a5700ce83414c64514d82d60bcda8aabfde092d1c1a8663f9200c07fdcc6da8f"
             ],
-            "markers": "python_full_version >= '3.5.0'",
+            "markers": "python_version >= '3.5'",
             "version": "==0.11.2"
         },
         "urllib3": {
