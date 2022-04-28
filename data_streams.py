@@ -8,14 +8,8 @@ from protocol.quickswap.config import MATIC_WSS, MONITORED_PAIRS
 from protocol.quickswap.contract.clients import QuickSwapPairClient
 from protocol.quickswap.events.liquidity_pool import PairStatusEvent, SwapEvent, SwapEvents
 
-# Connect to the remote node.
-web3_websocket_conn = Web3(Web3.WebsocketProvider(MATIC_WSS))
 
-# Fixes a fieldLength error calling getBlock since we're using a POA chain
-web3_websocket_conn.middleware_onion.inject(geth_poa_middleware, layer=0)
-
-clients = [QuickSwapPairClient(MATIC_WSS, QUICKSWAP_PAIR['abi'], mp[0], mp[1]) for mp in MONITORED_PAIRS]
-
+# Extremely basic metrics in process for now
 STATS = {
     'BLOCK_PROCESS': {
         'min_process_time_ms': float('inf'),
@@ -28,11 +22,28 @@ STATS = {
 }
 
 async def main(executor: ThreadPoolExecutor) -> None:
+    # Initial setup
+
+    # This is the main connection used by the event loop, which is safe since
+    # it's single-threaded. The client classes provide their own connection pools
+    # to handle multi-threaded operations.
+    web3_websocket_conn = Web3(Web3.WebsocketProvider(MATIC_WSS))
+
+    # Fixes a fieldLength error when calling getBlock, since we're using a POA chain.
+    web3_websocket_conn.middleware_onion.inject(geth_poa_middleware, layer=0)
+
+    # Generate clients for each pair we're setup to monitor.
+    # 
+    # This abstraction is a little rough, but works fine for now. 
+    # The client provides both metadata about the pair + address being monitored, as well as an interface
+    # to invoke methods on the contract + manage underlying connections.
+    clients = [QuickSwapPairClient(MATIC_WSS, QUICKSWAP_PAIR['abi'], mp[0], mp[1]) for mp in MONITORED_PAIRS]
+
     print("***** Started main function *****")
     latest_block_filter = web3_websocket_conn.eth.filter('latest')
     await asyncio.gather(
-        poll_for_blocks(latest_block_filter, executor, 0.3),
-        poll_for_swaps(0.3),
+        poll_for_blocks(latest_block_filter, executor, clients, web3_websocket_conn, 0.3),
+        poll_for_swaps(clients, 0.3),
         report_process_stats(10))
 
 def update_process_stats(start_ns: int, end_ns: int, process_key: str) -> None:
@@ -53,8 +64,8 @@ async def report_process_stats(report_interval: int) -> None:
 
 class BlockTracker:
     """
-    Provides basic block "lineage" monitoring, i.e. that we don't
-    skip over any blocks in producing our data stream.
+    Provides basic block "lineage" monitoring, i.e. since this is a polling model on the latest block, 
+    we want to ensure that we don't miss any blocks in producing our data stream.
 
     In a production app, I imagine this would become more robust,
     driving alerting and/or automated recovery.
@@ -77,7 +88,7 @@ class BlockTracker:
         self.prev_block = curr_block.result().hash.hex()
 
 
-async def poll_for_blocks(latest_block_filter, executor: ThreadPoolExecutor, poll_interval: int) -> None:
+async def poll_for_blocks(latest_block_filter, executor: ThreadPoolExecutor, clients: list[QuickSwapPairClient], conn: Web3, poll_interval: int) -> None:
     """
     Must be called from an asyncio event loop. This kicks off a poll / async sleep routine looking for
     new blocks generated from the `latest_block_filter` provided.
@@ -103,7 +114,7 @@ async def poll_for_blocks(latest_block_filter, executor: ThreadPoolExecutor, pol
             print("New block!!! - ", block_addr)
 
             event_loop = asyncio.get_running_loop()
-            block_data = event_loop.run_in_executor(executor, web3_websocket_conn.eth.getBlock, block_addr)
+            block_data = event_loop.run_in_executor(executor, conn.eth.getBlock, block_addr)
             block_data.add_done_callback(block_tracker.assert_continuous_block_lineage)
 
             for client in clients:
@@ -122,7 +133,7 @@ async def poll_for_blocks(latest_block_filter, executor: ThreadPoolExecutor, pol
 
         await asyncio.sleep(poll_interval)
 
-async def poll_for_swaps(poll_interval: int) -> None:
+async def poll_for_swaps(clients: list[QuickSwapPairClient], poll_interval: int) -> None:
     print(f"***** Beginning poll for swaps. Poll interval set to: {poll_interval}s *****")
 
     for client in clients:
